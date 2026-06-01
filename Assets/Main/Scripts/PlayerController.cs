@@ -25,6 +25,7 @@ public class PlayerController : MonoBehaviour
     float _yawVelocity;
     float _verticalSpeed;
     float _currentSpeed;
+    bool  _locked;
 
     enum CrouchPhase { Standing, EnteringCrouch, Crouching, ExitingCrouch }
     CrouchPhase _crouchPhase = CrouchPhase.Standing;
@@ -49,8 +50,12 @@ public class PlayerController : MonoBehaviour
         ApplyGravity();
     }
 
+    public void LockControls()   { _locked = true; }
+    public void UnlockControls() { _locked = false; }
+
     void HandleCrouch()
     {
+        if (_locked) return;
         bool pressedC = Input.GetKeyDown(KeyCode.C);
 
         switch (_crouchPhase)
@@ -78,7 +83,7 @@ public class PlayerController : MonoBehaviour
                     var info = _anim.GetCurrentAnimatorStateInfo(0);
                     if (info.IsName("CrouchEnter") && info.normalizedTime <= 0.05f)
                     {
-                        _anim.CrossFadeInFixedTime("CrouchLocomotion", 0.1f);
+                        _anim.CrossFadeInFixedTime("CrouchLocomotion", 0.2f);
                         _crouchPhase = CrouchPhase.Crouching;
                     }
                 }
@@ -108,6 +113,14 @@ public class PlayerController : MonoBehaviour
 
     void HandleMovement()
     {
+        if (_locked)
+        {
+            _currentSpeed = 0f;
+            _anim.SetFloat(HashVelX, 0f, animDampTime, Time.deltaTime);
+            _anim.SetFloat(HashVelZ, 0f, animDampTime, Time.deltaTime);
+            return;
+        }
+
         bool isCrouching   = _crouchPhase == CrouchPhase.Crouching;
         bool lockMovement  = _crouchPhase == CrouchPhase.EnteringCrouch
                           || _crouchPhase == CrouchPhase.ExitingCrouch;

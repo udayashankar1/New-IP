@@ -39,6 +39,9 @@ public class EnemyPatrol : MonoBehaviour
     [Tooltip("Raycast target height when player is standing")]
     public float standHeadHeight        = 1.6f;
 
+    [Header("Takedown")]
+    public Transform takedownPoint;
+
     [Header("Detection Gizmos")]
     public Color fovColor      = new Color(1f, 1f, 0f,   0.08f);
     public Color fovAlertColor = new Color(1f, 0.15f, 0f, 0.18f);
@@ -60,8 +63,10 @@ public class EnemyPatrol : MonoBehaviour
 
     bool  _playerInSight;
 
-    enum Phase { Patrolling, Spotted }
+    enum Phase { Patrolling, Spotted, TakenDown }
     Phase _phase = Phase.Patrolling;
+
+    public bool CanBeTakenDown => _phase == Phase.Patrolling || _phase == Phase.Spotted;
 
     static readonly int HashSpeed   = Animator.StringToHash("Speed");
     static readonly int HashSpotted = Animator.StringToHash("Spotted");
@@ -87,6 +92,8 @@ public class EnemyPatrol : MonoBehaviour
     // ── Main loop ──────────────────────────────────────────────
     void Update()
     {
+        if (_phase == Phase.TakenDown) return;
+
         ApplyGravity();
 
         switch (_phase)
@@ -245,6 +252,39 @@ public class EnemyPatrol : MonoBehaviour
         return nearest;
     }
 
+    // ── Stealth Takedown ───────────────────────────────────────
+    public void BeginTakedown()
+    {
+        _phase = Phase.TakenDown;
+        _anim.SetFloat(HashSpeed, 0f);
+        _anim.CrossFadeInFixedTime("Stealth Takedown", 0.05f);
+        StartCoroutine(TakedownRoutine());
+    }
+
+    System.Collections.IEnumerator TakedownRoutine()
+    {
+        // wait to enter the takedown state
+        float t = 0f;
+        while (t < 2f)
+        {
+            t += Time.deltaTime;
+            if (_anim.GetCurrentAnimatorStateInfo(0).IsName("Stealth Takedown")) break;
+            yield return null;
+        }
+
+        // wait for the animation to nearly finish
+        t = 0f;
+        while (t < 10f)
+        {
+            t += Time.deltaTime;
+            var info = _anim.GetCurrentAnimatorStateInfo(0);
+            if (info.IsName("Stealth Takedown") && info.normalizedTime >= 0.9f) break;
+            yield return null;
+        }
+
+        gameObject.SetActive(false);
+    }
+
     // ── Gizmos ─────────────────────────────────────────────────
 #if UNITY_EDITOR
     void OnDrawGizmos()
@@ -313,6 +353,7 @@ public class EnemyPatrol : MonoBehaviour
         GUIStyle style = new GUIStyle { normal = { textColor = alert ? Color.red : Color.yellow }, fontStyle = FontStyle.Bold };
         string label = alert ? "! SPOTTED !" : $"FOV {fovAngle}°  Stand {detectionRange}m  Crouch {crouchRange:F1}m";
         Handles.Label(transform.position + Vector3.up * 2.8f, label, style);
+
     }
 #endif
 }

@@ -23,7 +23,10 @@
       "Bash(Remove-Item \"D:\\\\Unity\\\\Project New IP\\\\Assets\\\\Main\\\\Scripts\\\\FootIK.cs.meta\" -ErrorAction SilentlyContinue)",
       "Bash(Write-Host \"done\")",
       "mcp__ai-game-developer__screenshot-isolated",
-      "mcp__ai-game-developer__assets-get-data"
+      "mcp__ai-game-developer__assets-get-data",
+      "mcp__ai-game-developer__gameobject-component-add",
+      "mcp__ai-game-developer__animator-modify",
+      "Bash(del *)"
     ]
   },
   "enableAllProjectMcpServers": true,

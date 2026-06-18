@@ -26,6 +26,7 @@ public class StealthTakedown : MonoBehaviour
     Animator            _anim;
     CharacterController _cc;
     bool                _busy;
+    EnemyPatrol         _promptTarget;
 
     static readonly int HashVelZ = Animator.StringToHash("VelocityZ");
 
@@ -38,9 +39,25 @@ public class StealthTakedown : MonoBehaviour
 
     void Update()
     {
-        if (_busy || !_player.IsCrouching || !Input.GetKeyDown(KeyCode.F)) return;
-        EnemyPatrol target = FindTarget();
-        if (target != null) StartCoroutine(Execute(target));
+        if (!_busy && _player.IsCrouching)
+        {
+            EnemyPatrol target = FindTarget();
+            UpdateFPrompt(target);
+            if (target != null && Input.GetKeyDown(KeyCode.F))
+                StartCoroutine(Execute(target));
+        }
+        else
+        {
+            UpdateFPrompt(null);
+        }
+    }
+
+    void UpdateFPrompt(EnemyPatrol target)
+    {
+        if (_promptTarget == target) return;
+        if (_promptTarget != null) _promptTarget.ShowFPrompt(false);
+        _promptTarget = target;
+        if (_promptTarget != null) _promptTarget.ShowFPrompt(true);
     }
 
     EnemyPatrol FindTarget()
@@ -83,7 +100,6 @@ public class StealthTakedown : MonoBehaviour
             flat.y = 0f;
 
             if (flat.magnitude <= arrivalThreshold) break;
-
             _cc.Move(flat.normalized * Mathf.Min(approachSpeed * Time.unscaledDeltaTime, flat.magnitude));
 
             Quaternion targetRot = point != null ? point.rotation : enemy.transform.rotation;

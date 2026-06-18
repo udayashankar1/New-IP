@@ -26,7 +26,12 @@
       "mcp__ai-game-developer__assets-get-data",
       "mcp__ai-game-developer__gameobject-component-add",
       "mcp__ai-game-developer__animator-modify",
-      "Bash(del *)"
+      "Bash(del *)",
+      "PowerShell(if \\(!\\(Test-Path \"D:\\\\Git\\\\New-IP\\\\Assets\\\\Editor\"\\)\\) { New-Item -ItemType Directory -Path \"D:\\\\Git\\\\New-IP\\\\Assets\\\\Editor\" | Out-Null; Write-Output \"Created\" } else { Write-Output \"Exists\" })",
+      "mcp__ai-game-developer__unity-tool-list",
+      "Bash(npx *)",
+      "Bash(node -e \"const fs=require\\('fs'\\);const c=fs.readFileSync\\('tmp_setup.txt','utf8'\\);process.stdout.write\\(JSON.stringify\\({csharpCode:c,className:'SetupPrompts',methodName:'Main'}\\)\\)\")",
+      "Bash(node -e \"const fs=require\\('fs'\\);const c=fs.readFileSync\\('tmp_anchor.txt','utf8'\\);process.stdout.write\\(JSON.stringify\\({csharpCode:c,className:'AddPromptAnchors',methodName:'Main'}\\)\\)\")"
     ]
   },
   "enableAllProjectMcpServers": true,

@@ -33,6 +33,11 @@ MonoBehaviour:
   suspicionDuration: 3
   facingDuration: 1
   investigateDuration: 2
+  distractionHearingRange: 18
+  distractionGlanceDuration: 1.5
+  distractionInvestigateDuration: 5
+  lureGhostDistance: 1
+  lureTurnDelay: 1.5
   fovColor: {r: 1, g: 1, b: 0, a: 0.08}
   fovAlertColor: {r: 1, g: 0.15, b: 0, a: 0.18}
   edgeColor: {r: 1, g: 1, b: 0, a: 0.85}

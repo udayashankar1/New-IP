@@ -85,6 +85,10 @@ public class EnemyPatrol : MonoBehaviour
     float    suspicionDuration     => config.suspicionDuration;
     float    facingDuration        => config.facingDuration;
     float    investigateDuration   => config.investigateDuration;
+    float    distractionGlanceDuration => config.distractionGlanceDuration;
+    float    distractionInvestigateDuration => config.distractionInvestigateDuration;
+    float    lureGhostDistance     => config.lureGhostDistance;
+    float    lureTurnDelay         => config.lureTurnDelay;
     Color    fovColor              => config.fovColor;
     Color    fovAlertColor         => config.fovAlertColor;
     Color    edgeColor             => config.edgeColor;
@@ -111,19 +115,98 @@ public class EnemyPatrol : MonoBehaviour
     float   _facingTimer;
     float   _investigateTimer;
 
+    // Distraction (dropped object noise) / lure
+    Vector3 _distractionSpot;
+    float   _glanceTimer;
+    float   _glanceWait;
+
+    // Seconds to wait at the spot for the current investigation (varies by trigger).
+    float   _investigateWait;
+
     // NavMesh path following
     NavMeshPath _navPath;
     float       _pathRecalcTimer;
     Vector3     _lastNavDestination;
     const float PathRecalcInterval = 0.35f;
 
-    enum Phase { Patrolling, Investigating, Spotted, TakenDown }
+    enum Phase { Patrolling, Investigating, Glancing, Spotted, TakenDown }
     Phase _phase = Phase.Patrolling;
 
     enum InvestigateStep { Facing, Moving, Waiting }
     InvestigateStep _investigateStep;
 
-    public bool CanBeTakenDown => _phase == Phase.Patrolling || _phase == Phase.Investigating || _phase == Phase.Spotted;
+    public bool CanBeTakenDown => _phase == Phase.Patrolling || _phase == Phase.Investigating || _phase == Phase.Glancing || _phase == Phase.Spotted;
+
+    // ── Distraction API ────────────────────────────────────────
+    /// <summary>Sound radius within which this enemy notices a dropped distraction (no line-of-sight needed).</summary>
+    public float HearingRange => config != null ? config.distractionHearingRange : 18f;
+
+    /// <summary>An already-alerted or taken-down enemy ignores distractions.</summary>
+    public bool CanBeDistracted => _phase == Phase.Patrolling || _phase == Phase.Investigating || _phase == Phase.Glancing;
+
+    /// <summary>
+    /// React to a distraction that landed at <paramref name="spot"/>.
+    /// The caller decides who investigates: the nearest hearer gets
+    /// <paramref name="investigate"/>=true (walks to the spot), everyone else
+    /// just glances toward it and then resumes patrol.
+    /// </summary>
+    public void NoticeDistraction(Vector3 spot, bool investigate)
+    {
+        if (_phase == Phase.Spotted || _phase == Phase.TakenDown) return;
+
+        _suspicionTimer = 0f;
+        _waiting        = false;
+
+        if (investigate)
+        {
+            _lastSeenPosition = spot;
+            _facingTimer      = 0f;
+            _investigateTimer = 0f;
+            _investigateWait  = distractionInvestigateDuration;
+            _investigateStep  = InvestigateStep.Facing;
+            _phase            = Phase.Investigating;
+        }
+        else
+        {
+            _distractionSpot = spot;
+            _glanceTimer     = 0f;
+            _glanceWait      = distractionGlanceDuration;
+            _phase           = Phase.Glancing;
+        }
+    }
+
+    /// <summary>
+    /// Player pressed Q on this enemy: the Ghost appears behind it and calls; the
+    /// enemy turns around and inspects that spot in place for a while, then resumes.
+    /// </summary>
+    public void LureFromBehind()
+    {
+        if (!CanBeDistracted) return;
+
+        Vector3 behind = transform.position - transform.forward * lureGhostDistance;
+        behind.y = transform.position.y;
+
+        // Ghost appears behind, facing the enemy's back, and does its calling gesture immediately…
+        if (GhostCaller.Instance != null)
+            GhostCaller.Instance.Summon(behind, transform.position + Vector3.up * 1f);
+
+        // …then the enemy turns around after a delay (synced with the calling animation).
+        StartCoroutine(LureTurnRoutine(behind));
+    }
+
+    System.Collections.IEnumerator LureTurnRoutine(Vector3 spot)
+    {
+        if (lureTurnDelay > 0f) yield return new WaitForSeconds(lureTurnDelay);
+        if (!CanBeDistracted) yield break;                   // got spotted / taken down during the delay
+
+        // Turn around and investigate the spot in place (no walking).
+        _suspicionTimer  = 0f;
+        _waiting         = false;
+        _distractionSpot = spot;
+        _glanceTimer     = 0f;
+        _glanceWait      = distractionInvestigateDuration;   // ~5 s
+        _phase           = Phase.Glancing;
+    }
 
     // Suspicion UI hooks
     public bool  IsSuspicious      => _suspicionTimer > 0f;
@@ -185,6 +268,12 @@ public class EnemyPatrol : MonoBehaviour
                 _playerInSight = CanSeePlayer();
                 if (_playerInSight) { OnPlayerSpotted(); return; }
                 HandleInvestigating();
+                break;
+
+            case Phase.Glancing:
+                _playerInSight = CanSeePlayer();
+                if (_playerInSight) { OnPlayerSpotted(); return; }
+                HandleGlancing();
                 break;
 
             case Phase.Spotted:
@@ -293,6 +382,7 @@ public class EnemyPatrol : MonoBehaviour
                 _suspicionTimer   = 0f;
                 _facingTimer      = 0f;
                 _investigateTimer = 0f;
+                _investigateWait  = investigateDuration;
                 _investigateStep  = InvestigateStep.Facing;
                 _phase            = Phase.Investigating;
             }
@@ -372,10 +462,34 @@ public class EnemyPatrol : MonoBehaviour
         _anim.SetFloat(HashSpeed, 0f, 0.08f, Time.deltaTime);
         _investigateTimer += Time.deltaTime;
 
-        if (_investigateTimer >= investigateDuration)
+        if (_investigateTimer >= _investigateWait)
         {
             _phase         = Phase.Patrolling;
             _suspicionTimer = 0f;
+            _waypointIndex = NearestWaypointIndex();
+        }
+    }
+
+    // ── Glance (heard a distraction but isn't the closest) ─────
+    // Stand still, turn to look toward the noise, then resume patrol.
+    void HandleGlancing()
+    {
+        _anim.SetFloat(HashSpeed, 0f, 0.08f, Time.deltaTime);
+
+        Vector3 dir = _distractionSpot - transform.position;
+        dir.y = 0f;
+        if (dir.sqrMagnitude > 0.001f)
+        {
+            float targetYaw = Quaternion.LookRotation(dir.normalized).eulerAngles.y;
+            float newYaw    = Mathf.SmoothDampAngle(transform.eulerAngles.y, targetYaw,
+                                  ref _yawVelocity, rotationSmoothTime, maxTurnSpeed);
+            transform.rotation = Quaternion.Euler(0f, newYaw, 0f);
+        }
+
+        _glanceTimer += Time.deltaTime;
+        if (_glanceTimer >= _glanceWait)
+        {
+            _phase         = Phase.Patrolling;
             _waypointIndex = NearestWaypointIndex();
         }
     }

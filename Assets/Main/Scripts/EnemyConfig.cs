@@ -50,6 +50,18 @@ public class EnemyConfig : ScriptableObject
     [Tooltip("Seconds the enemy waits at the last-seen position before returning to patrol")]
     public float investigateDuration = 2f;
 
+    [Header("Distraction (thrown / dropped objects)")]
+    [Tooltip("How close a dropped distraction object must land for this enemy to notice the noise (sound radius, ignores line-of-sight).")]
+    public float distractionHearingRange = 18f;
+    [Tooltip("Seconds a non-investigating enemy stands looking at the distraction spot before returning to patrol.")]
+    public float distractionGlanceDuration = 1.5f;
+    [Tooltip("Seconds the NEAREST enemy spends inspecting the fallen distraction object before returning to patrol.")]
+    public float distractionInvestigateDuration = 5f;
+    [Tooltip("How far behind the enemy the Ghost appears when the player presses Q on that enemy.")]
+    public float lureGhostDistance = 1.5f;
+    [Tooltip("Seconds after the Ghost appears before the enemy turns around — lets you sync the turn with the calling animation.")]
+    public float lureTurnDelay = 0.5f;
+
     [Header("Detection Gizmos")]
     public Color fovColor       = new Color(1f, 1f, 0f,    0.08f);
     public Color fovAlertColor  = new Color(1f, 0.15f, 0f, 0.18f);

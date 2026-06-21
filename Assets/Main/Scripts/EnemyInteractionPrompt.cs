@@ -8,42 +8,51 @@ public class EnemyInteractionPrompt : MonoBehaviour
     [Tooltip("Max degrees from camera centre — enemy must be inside this cone")]
     public float viewAngle = 60f;
 
-    Camera      _camera;
-    EnemyPatrol _currentTarget;
-    EnemyPatrol _prevTarget;
+    /// <summary>Camera angle to this system's best candidate (∞ if none). Read by the sibling prompt to keep only one Q visible.</summary>
+    public float BestAngle { get; private set; } = Mathf.Infinity;
 
-    void Awake() => _camera = Camera.main;
+    Camera               _camera;
+    DistractionInteractor _distractor;
+    EnemyPatrol          _shownTarget;
+
+    void Awake()
+    {
+        _camera     = Camera.main;
+        _distractor = GetComponent<DistractionInteractor>();
+    }
 
     void Update()
     {
         if (_camera == null) _camera = Camera.main;
 
-        _currentTarget = FindBestTarget();
+        EnemyPatrol best = FindBestTarget(out float bestAngle);
+        BestAngle = best != null ? bestAngle : Mathf.Infinity;
 
-        if (_prevTarget != _currentTarget)
+        // Single-prompt rule: the distraction prompt wins exact ties, so the
+        // enemy prompt only shows when it is *strictly* closer to centre.
+        float otherAngle = _distractor != null ? _distractor.BestAngle : Mathf.Infinity;
+        EnemyPatrol toShow = (best != null && BestAngle < otherAngle) ? best : null;
+
+        if (_shownTarget != toShow)
         {
-            if (_prevTarget != null) _prevTarget.ShowQPrompt(false);
-            _prevTarget = _currentTarget;
+            if (_shownTarget != null) _shownTarget.ShowQPrompt(false);
+            _shownTarget = toShow;
         }
 
-        if (_currentTarget != null)
+        if (_shownTarget != null)
         {
-            _currentTarget.ShowQPrompt(true);
+            _shownTarget.ShowQPrompt(true);
 
             if (Input.GetKeyDown(KeyCode.Q))
-            {
-                float dist  = Vector3.Distance(transform.position, _currentTarget.transform.position);
-                float angle = CameraAngleTo(_currentTarget);
-                Debug.Log($"[Q Interaction] Target: {_currentTarget.name}  |  Distance: {dist:F2} m  |  Camera angle: {angle:F1}°");
-            }
+                _shownTarget.LureFromBehind();
         }
     }
 
-    EnemyPatrol FindBestTarget()
+    EnemyPatrol FindBestTarget(out float bestAngle)
     {
         var cols = Physics.OverlapSphere(transform.position, detectionRange);
-        EnemyPatrol best      = null;
-        float        bestAngle = viewAngle;
+        EnemyPatrol best = null;
+        bestAngle = viewAngle;
 
         foreach (var col in cols)
         {
@@ -53,7 +62,14 @@ public class EnemyInteractionPrompt : MonoBehaviour
             if (e == null || !e.CanBeTakenDown || e.IsFPromptActive) continue;
 
             float a = CameraAngleTo(e);
-            if (a < bestAngle) { bestAngle = a; best = e; }
+            if (a >= bestAngle) continue;                       // not closer to centre than current best
+
+            // Only focus an enemy you can actually see — one hidden behind another
+            // body or a wall is skipped even if its angle is smaller.
+            if (IsOccluded(e.transform.position + Vector3.up * 1.0f, e.transform)) continue;
+
+            bestAngle = a;
+            best = e;
         }
         return best;
     }
@@ -64,8 +80,26 @@ public class EnemyInteractionPrompt : MonoBehaviour
         return Vector3.Angle(_camera.transform.forward, toEnemy);
     }
 
+    // True if anything solid (other than the candidate itself or the player) sits
+    // between the camera and the candidate — i.e. the candidate is behind something.
+    bool IsOccluded(Vector3 targetPoint, Transform self)
+    {
+        Vector3 from = _camera.transform.position;
+        Vector3 dir  = targetPoint - from;
+        float   dist = dir.magnitude;
+        if (dist < 0.05f) return false;
+
+        foreach (var h in Physics.RaycastAll(from, dir / dist, dist - 0.1f, ~0, QueryTriggerInteraction.Ignore))
+        {
+            if (h.collider.transform == self || h.collider.transform.IsChildOf(self)) continue;
+            if (h.collider.GetComponentInParent<PlayerController>() != null)           continue;
+            return true;
+        }
+        return false;
+    }
+
     void OnDisable()
     {
-        if (_prevTarget != null) { _prevTarget.ShowQPrompt(false); _prevTarget = null; }
+        if (_shownTarget != null) { _shownTarget.ShowQPrompt(false); _shownTarget = null; }
     }
 }

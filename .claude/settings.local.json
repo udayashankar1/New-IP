@@ -31,7 +31,14 @@
       "mcp__ai-game-developer__unity-tool-list",
       "Bash(npx *)",
       "Bash(node -e \"const fs=require\\('fs'\\);const c=fs.readFileSync\\('tmp_setup.txt','utf8'\\);process.stdout.write\\(JSON.stringify\\({csharpCode:c,className:'SetupPrompts',methodName:'Main'}\\)\\)\")",
-      "Bash(node -e \"const fs=require\\('fs'\\);const c=fs.readFileSync\\('tmp_anchor.txt','utf8'\\);process.stdout.write\\(JSON.stringify\\({csharpCode:c,className:'AddPromptAnchors',methodName:'Main'}\\)\\)\")"
+      "Bash(node -e \"const fs=require\\('fs'\\);const c=fs.readFileSync\\('tmp_anchor.txt','utf8'\\);process.stdout.write\\(JSON.stringify\\({csharpCode:c,className:'AddPromptAnchors',methodName:'Main'}\\)\\)\")",
+      "Bash(node -e \"const fs=require\\('fs'\\);const c=fs.readFileSync\\('tmp_loco.txt','utf8'\\);process.stdout.write\\(JSON.stringify\\({csharpCode:c,className:'FixLocomotion',methodName:'Main'}\\)\\)\")",
+      "Bash(node -e \"const fs=require\\('fs'\\);const c=fs.readFileSync\\('D:/Git/New-IP/tmp_loco.txt','utf8'\\);process.stdout.write\\(JSON.stringify\\({csharpCode:c,className:'FixLocomotion',methodName:'Main'}\\)\\)\")",
+      "mcp__ai-game-developer__assets-shader-get-data",
+      "mcp__ai-game-developer__assets-material-create",
+      "mcp__ai-game-developer__gameobject-component-modify",
+      "Bash(python -c \"import uuid; print\\(uuid.uuid4\\(\\).hex\\)\")",
+      "Bash(powershell -Command \"[guid]::NewGuid\\(\\).ToString\\('N'\\)\")"
     ]
   },
   "enableAllProjectMcpServers": true,

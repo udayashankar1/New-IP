@@ -1,0 +1,20 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 22ecaf34528af424191f3d55f88b293d, type: 3}
+  m_Name: DistractionConfig
+  m_EditorClassIdentifier: Assembly-CSharp::DistractionConfig
+  dropMass: 5
+  pushSpeed: 3.5
+  upKick: 1
+  fallDelay: 1
+  ghostStandoff: 0.9
+  noiseRadiusOverride: 0

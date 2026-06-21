@@ -1,9 +1,22 @@
 using UnityEngine;
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  Arcade car controller — GTA-style handling.
+//
+//  Instead of Unity's stiff WheelCollider physics this uses a raycast suspension
+//  + custom tire-force model:
+//    • 4 raycasts provide spring/damper suspension (squat, dive, body roll).
+//    • A per-tire lateral grip force gives controllable cornering & drifting.
+//    • Drive/brake forces applied at the contact patch create real weight transfer.
+//  The result is fast, smooth, weighty-but-responsive arcade handling.
+//
+//  The WheelCollider references are reused ONLY as wheel anchor positions and are
+//  disabled at runtime, so existing scene wiring keeps working unchanged.
+// ─────────────────────────────────────────────────────────────────────────────
 [RequireComponent(typeof(Rigidbody))]
 public class CarController : MonoBehaviour
 {
-    [Header("Wheel Colliders")]
+    [Header("Wheel Anchors (reused as positions, disabled at runtime)")]
     public WheelCollider wheelFL;
     public WheelCollider wheelFR;
     public WheelCollider wheelRL;
@@ -19,126 +32,143 @@ public class CarController : MonoBehaviour
     private Quaternion initialSteeringWheelRot;
     private Transform steeringPivot;
 
-    [Header("Drive Settings")]
+    [Header("Drive Mode")]
     public DriveMode driveMode = DriveMode.RWD;
-    [Range(500f, 6000f)] public float maxMotorTorque = 2500f;
-    [Range(0f, 60f)]     public float maxSpeed = 40f;
-    [Range(20f, 50f)]    public float maxSteerAngle = 35f;
-    public float brakeTorque = 6000f;
-    public float handBrakeTorque = 10000f;
-
-    [Header("Suspension")]
-    public float suspensionDistance = 0.2f;
-    public float springForce = 42000f;
-    public float damperForce = 5000f;
-    [Range(0f, 1f)] public float targetPosition = 0.5f;
-
-    [Header("Anti-Roll Bar")]
-    public float antiRollForce = 5000f;
-
-    [Header("Friction (Base)")]
-    public float forwardStiffness = 1.5f;
-    public float sidewaysStiffness = 1.8f;
-
-    [Header("Drift / Slip (GTA-style)")]
-    [Tooltip("Sideways stiffness when fully drifting (lower = more slip)")]
-    [Range(0.1f, 1.2f)] public float driftSidewaysStiffness = 0.35f;
-    [Tooltip("Lateral slip amount (from WheelHit) before grip starts reducing")]
-    [Range(0.05f, 0.8f)] public float slipThreshold = 0.25f;
-    [Tooltip("How fast grip recovers after slip (lose grip is 2.5x faster)")]
-    [Range(1f, 10f)] public float driftRecoverySpeed = 4f;
-    [Tooltip("Extra rear slip contribution when braking AND steering at speed")]
-    [Range(0f, 1f)] public float brakeSteerDriftFactor = 0.65f;
-    [Tooltip("Speed (km/h) where steering angle begins to reduce for stability")]
-    [Range(0f, 40f)] public float steerReductionStartKmh = 20f;
-
-    [Header("Vehicle Entry")]
-    public Transform driverSeat;          // child transform — player snaps here on enter
-
-    [Header("Body")]
-    public Vector3 centerOfMassOffset = Vector3.zero;
-
-    // ── internals ──────────────────────────────────────────────────────────
-    Rigidbody _rb;
-    float _motorInput;
-    float _steerInput;
-    bool  _handBrake;
-    bool  _playerControlled;    // set true by VehicleInteraction on enter
-
-    float _currentRearSideways;
-    float _currentFrontSideways;
-
     public enum DriveMode { FWD, RWD, AWD }
 
+    [Header("Body")]
+    public float mass = 1400f;
+    [Tooltip("Local center of mass. Keep it LOW for a planted, GTA-like feel.")]
+    public Vector3 centerOfMass = new Vector3(0f, -0.4f, 0f);
+
+    [Header("Suspension (per wheel)")]
+    [Tooltip("Natural ride height — distance from the wheel anchor down to the wheel centre at rest.")]
+    public float restLength = 0.18f;
+    [Tooltip("How far the suspension can compress/extend from rest. Smaller = firmer, less bob.")]
+    public float springTravel = 0.12f;
+    public float wheelRadius = 0.35f;
+    [Tooltip("Spring force. Higher = stiffer, less body roll/dive.")]
+    public float springStiffness = 50000f;
+    [Tooltip("Damping. Higher = settles faster, less bounce. Near-critical kills the bobbing.")]
+    public float damperStiffness = 8000f;
+
+    [Header("Engine / Speed")]
+    [Tooltip("Top forward speed in m/s. (×3.6 = km/h, so 33 ≈ 120 km/h)")]
+    public float maxSpeed = 33f;
+    public float maxReverseSpeed = 12f;
+    [Tooltip("Acceleration force. Higher = punchier pickup.")]
+    public float enginePower = 16000f;
+    [Tooltip("How accel tapers as you approach top speed (x = speed %, y = power %).")]
+    public AnimationCurve powerCurve = AnimationCurve.EaseInOut(0f, 1f, 1f, 0.15f);
+    public float brakePower = 20000f;
+    [Tooltip("Natural slow-down when off the throttle (engine braking / rolling drag).")]
+    [Range(0f, 1f)] public float rollingResistance = 0.06f;
+
+    [Header("Steering")]
+    public float maxSteerAngle = 32f;
+    [Tooltip("How fast the wheels turn toward target angle (deg/sec). Lower = smoother turn-in.")]
+    public float steerSpeed = 150f;
+    [Tooltip("How fast wheels return to centre (deg/sec).")]
+    public float steerReturnSpeed = 280f;
+    [Tooltip("Steering authority kept at top speed (0.5 = half lock at max speed for stability).")]
+    [Range(0.2f, 1f)] public float highSpeedSteer = 0.5f;
+
+    [Header("Grip / Traction")]
+    [Tooltip("Front tyre lateral grip. Lower = smoother, more natural turn-in (1 = robotic snap).")]
+    [Range(0f, 1f)] public float frontGrip = 0.85f;
+    [Tooltip("Rear tyre lateral grip when driving normally. Keep ≥ front for stable handling.")]
+    [Range(0f, 1f)] public float rearGrip = 0.9f;
+    [Tooltip("Rear grip while actively drifting (brake+steer). Lower = slides more.")]
+    [Range(0f, 1f)] public float driftRearGrip = 0.4f;
+    [Tooltip("Rear grip while the handbrake is held. Very low = instant slide.")]
+    [Range(0f, 1f)] public float handbrakeGrip = 0.12f;
+    [Tooltip("How quickly grip returns after a slide (lose grip is faster).")]
+    public float gripRecoverySpeed = 5f;
+
+    [Header("High-Speed Stability")]
+    [Tooltip("Downforce per m/s of speed — keeps the car planted at speed.")]
+    public float downforce = 25f;
+
+    [Header("Vehicle Entry")]
+    public Transform driverSeat;
+
+    // ── internals ───────────────────────────────────────────────────────────
+    Rigidbody _rb;
+    Wheel[]   _wheels;
+    float _motorInput, _steerInput;
+    bool  _handBrake;
+    bool  _playerControlled;
+    float _currentSteerAngle;
+    float _currentRearGrip;
+    readonly RaycastHit[] _hitBuf = new RaycastHit[8];
+
+    class Wheel
+    {
+        public Transform anchor;   // stable position (the WheelCollider's transform)
+        public Transform mesh;     // visual wheel
+        public bool steer;         // front wheels turn
+        public bool power;         // driven wheels get engine torque
+        public float spin;         // accumulated roll angle for the visual
+        public bool grounded;
+        public Vector3 meshPos;    // world position to render the wheel mesh at
+    }
+
+    // ── setup ────────────────────────────────────────────────────────────────
     void Awake()
     {
         _rb = GetComponent<Rigidbody>();
-        _rb.mass = 1500f;
-        _rb.linearDamping = 0.05f;
-        _rb.angularDamping = 0.5f;
-        if (centerOfMassOffset != Vector3.zero)
-            _rb.centerOfMass = centerOfMassOffset;
+        _rb.mass = mass;
+        _rb.linearDamping = 0.1f;
+        _rb.angularDamping = 2.5f;
+        _rb.centerOfMass = centerOfMass;
+        _rb.interpolation = RigidbodyInterpolation.Interpolate;
 
-        _currentRearSideways  = sidewaysStiffness;
-        _currentFrontSideways = sidewaysStiffness;
+        bool fwd = driveMode == DriveMode.FWD || driveMode == DriveMode.AWD;
+        bool rwd = driveMode == DriveMode.RWD || driveMode == DriveMode.AWD;
 
-        if (steeringWheel != null)
+        _wheels = new[]
         {
-            initialSteeringWheelRot = steeringWheel.localRotation;
-            MeshRenderer mr = steeringWheel.GetComponent<MeshRenderer>();
-            if (mr != null)
-            {
-                steeringPivot = new GameObject("SteeringWheelPivot").transform;
-                steeringPivot.SetParent(steeringWheel.parent);
-                steeringPivot.position = mr.bounds.center;
-                steeringPivot.localRotation = initialSteeringWheelRot;
-                steeringWheel.SetParent(steeringPivot, true);
-            }
-            else
-            {
-                steeringPivot = steeringWheel;
-            }
+            MakeWheel(wheelFL, meshFL, steer:true,  power:fwd),
+            MakeWheel(wheelFR, meshFR, steer:true,  power:fwd),
+            MakeWheel(wheelRL, meshRL, steer:false, power:rwd),
+            MakeWheel(wheelRR, meshRR, steer:false, power:rwd),
+        };
+
+        _currentRearGrip = rearGrip;
+        SetupSteeringWheel();
+    }
+
+    Wheel MakeWheel(WheelCollider wc, Transform mesh, bool steer, bool power)
+    {
+        if (wc == null) return null;
+        wc.enabled = false;                 // stop WheelCollider physics — we own the forces now
+        if (wheelRadius <= 0f) wheelRadius = wc.radius;
+        return new Wheel { anchor = wc.transform, mesh = mesh, steer = steer, power = power };
+    }
+
+    void SetupSteeringWheel()
+    {
+        if (steeringWheel == null) return;
+        initialSteeringWheelRot = steeringWheel.localRotation;
+        MeshRenderer mr = steeringWheel.GetComponent<MeshRenderer>();
+        if (mr != null)
+        {
+            steeringPivot = new GameObject("SteeringWheelPivot").transform;
+            steeringPivot.SetParent(steeringWheel.parent);
+            steeringPivot.position = mr.bounds.center;
+            steeringPivot.localRotation = initialSteeringWheelRot;
+            steeringWheel.SetParent(steeringPivot, true);
         }
-
-        ConfigureWheel(wheelFL);
-        ConfigureWheel(wheelFR);
-        ConfigureWheel(wheelRL);
-        ConfigureWheel(wheelRR);
-
-        SetFriction(wheelFL, forwardStiffness, sidewaysStiffness);
-        SetFriction(wheelFR, forwardStiffness, sidewaysStiffness);
-        SetFriction(wheelRL, forwardStiffness, sidewaysStiffness);
-        SetFriction(wheelRR, forwardStiffness, sidewaysStiffness);
-    }
-
-    void ConfigureWheel(WheelCollider wc)
-    {
-        wc.suspensionDistance = suspensionDistance;
-        var spring = wc.suspensionSpring;
-        spring.spring         = springForce;
-        spring.damper         = damperForce;
-        spring.targetPosition = targetPosition;
-        wc.suspensionSpring   = spring;
-        wc.forceAppPointDistance = 0.05f;
-    }
-
-    void SetFriction(WheelCollider wc, float fwd, float side)
-    {
-        var fwdFriction = wc.forwardFriction;
-        fwdFriction.stiffness = fwd;
-        wc.forwardFriction = fwdFriction;
-
-        var sideFriction = wc.sidewaysFriction;
-        sideFriction.stiffness = side;
-        wc.sidewaysFriction = sideFriction;
+        else steeringPivot = steeringWheel;
     }
 
     public void SetPlayerControlled(bool on)
     {
         _playerControlled = on;
-        if (!on) { _motorInput = 0f; _steerInput = 0f; _handBrake = false; }
+        if (!on) { _motorInput = 0f; _steerInput = 0f; _handBrake = false; _currentSteerAngle = 0f; }
     }
 
+    // ── input ────────────────────────────────────────────────────────────────
     void Update()
     {
         if (!_playerControlled) return;
@@ -147,185 +177,184 @@ public class CarController : MonoBehaviour
         _handBrake  = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.Space);
     }
 
-    void ApplyParkBrake()
-    {
-        wheelFL.motorTorque = 0f; wheelFR.motorTorque = 0f;
-        wheelRL.motorTorque = 0f; wheelRR.motorTorque = 0f;
-        wheelFL.brakeTorque = handBrakeTorque; wheelFR.brakeTorque = handBrakeTorque;
-        wheelRL.brakeTorque = handBrakeTorque; wheelRR.brakeTorque = handBrakeTorque;
-        wheelFL.steerAngle  = 0f; wheelFR.steerAngle  = 0f;
-    }
-
+    // ── physics ────────────────────────────────────────────────────────────────
     void FixedUpdate()
     {
-        if (!_playerControlled) { ApplyParkBrake(); return; }
+        if (_wheels == null) return;
 
-        float speed        = _rb.linearVelocity.magnitude * 3.6f; // km/h
         float forwardSpeed = Vector3.Dot(transform.forward, _rb.linearVelocity);
+        float speed        = _rb.linearVelocity.magnitude;
+        float dt           = Time.fixedDeltaTime;
 
-        // ── Speed-sensitive steering ─────────────────────────────────────────
-        // Reduce max steer angle at high speed (more stable, GTA-like)
-        float speedOverBase = Mathf.Clamp01((speed - steerReductionStartKmh) / Mathf.Max(1f, maxSpeed - steerReductionStartKmh));
-        float effectiveSteer = Mathf.Lerp(maxSteerAngle, maxSteerAngle * 0.5f, speedOverBase);
-        float steer = _steerInput * effectiveSteer;
-        wheelFL.steerAngle = steer;
-        wheelFR.steerAngle = steer;
+        UpdateSteering(forwardSpeed, dt);
+        UpdateRearGrip(speed, dt);
 
-        // ── Torque & Dynamic Braking ─────────────────────────────────────
-        float torque = 0f;
-        float brake  = 0f;
+        // Steered wheel directions (front wheels rotate by the smoothed steer angle).
+        Quaternion steerRot = Quaternion.AngleAxis(_currentSteerAngle, transform.up);
+        Vector3 steerFwd   = steerRot * transform.forward;
+        Vector3 steerRight = steerRot * transform.right;
 
-        if (_motorInput < 0)
+        int poweredCount = 0;
+        foreach (var w in _wheels) if (w != null && w.power) poweredCount++;
+        poweredCount = Mathf.Max(1, poweredCount);
+
+        float tireMass = _rb.mass / 4f;
+
+        foreach (var w in _wheels)
         {
-            if (forwardSpeed > 1f)
-                brake  = Mathf.Abs(_motorInput) * brakeTorque;
-            else
-                torque = speed < maxSpeed ? _motorInput * maxMotorTorque : 0f;
+            if (w == null) continue;
+
+            Vector3 up   = transform.up;
+            Vector3 fwd  = w.steer ? steerFwd   : transform.forward;
+            Vector3 side = w.steer ? steerRight : transform.right;
+            Vector3 pos  = w.anchor.position;
+
+            // ── Suspension (raycast spring/damper) ───────────────────────────
+            float maxDist = restLength + springTravel + wheelRadius;
+            // Cast down and pick the nearest hit that ISN'T part of this car, so the
+            // body's own colliders never count as ground.
+            int n = Physics.RaycastNonAlloc(pos, -up, _hitBuf, maxDist, ~0, QueryTriggerInteraction.Ignore);
+            RaycastHit hit = default;
+            float best = float.MaxValue;
+            w.grounded = false;
+            for (int i = 0; i < n; i++)
+            {
+                if (_hitBuf[i].collider.transform.IsChildOf(transform)) continue;
+                if (_hitBuf[i].distance < best) { best = _hitBuf[i].distance; hit = _hitBuf[i]; w.grounded = true; }
+            }
+
+            if (w.grounded)
+            {
+                Vector3 tireVel = _rb.GetPointVelocity(pos);
+
+                float currentLen = hit.distance - wheelRadius;     // current spring length
+                float offset     = restLength - currentLen;        // + when compressed
+                float springVel  = Vector3.Dot(up, tireVel);
+                float suspension = offset * springStiffness - springVel * damperStiffness;
+                if (suspension > 0f) _rb.AddForceAtPosition(up * suspension, pos);
+
+                // ── Lateral grip (kills sideways slide -> cornering & drift) ──
+                float grip = w.steer ? frontGrip : _currentRearGrip;
+                float lateralVel = Vector3.Dot(side, tireVel);
+                float desiredAccel = -lateralVel * grip / dt;
+                _rb.AddForceAtPosition(side * (tireMass * desiredAccel), pos);
+
+                // ── Drive force (engine) ─────────────────────────────────────
+                if (w.power && Mathf.Abs(_motorInput) > 0.01f)
+                {
+                    bool accelerating = Mathf.Sign(_motorInput) == Mathf.Sign(forwardSpeed) || Mathf.Abs(forwardSpeed) < 0.5f;
+                    if (accelerating)
+                    {
+                        float top = _motorInput > 0f ? maxSpeed : maxReverseSpeed;
+                        float t   = Mathf.Clamp01(Mathf.Abs(forwardSpeed) / Mathf.Max(1f, top));
+                        float power = powerCurve.Evaluate(t) * enginePower * _motorInput;
+                        _rb.AddForceAtPosition(fwd * (power / poweredCount), pos);
+                    }
+                }
+
+                // ── Braking & rolling resistance (along travel) ──────────────
+                float longVel = Vector3.Dot(fwd, tireVel);
+                bool braking = Mathf.Abs(_motorInput) > 0.01f &&
+                               Mathf.Sign(_motorInput) != Mathf.Sign(forwardSpeed) &&
+                               Mathf.Abs(forwardSpeed) > 0.5f;
+                float brakeF = 0f;
+                if (braking) brakeF = brakePower * Mathf.Abs(_motorInput);
+                else if (Mathf.Abs(_motorInput) < 0.01f) brakeF = brakePower * rollingResistance;
+                if (_handBrake && !w.steer) brakeF = Mathf.Max(brakeF, brakePower * 0.6f);
+
+                float brakeAccel = Mathf.Clamp(-longVel / dt, -brakeF / tireMass, brakeF / tireMass);
+                _rb.AddForceAtPosition(fwd * (tireMass * brakeAccel) * (brakeF > 0f ? 1f : 0f), pos);
+
+            }
+
+            // Visual placement — cast straight DOWN in world from the anchor so the
+            // wheel sits on the ground directly under its mount. Vertical-only, so it
+            // never snaps sideways when the body leans and never digs into terrain.
+            PlaceWheelMesh(w, pos);
+
+            UpdateWheelMesh(w, forwardSpeed, dt);
         }
-        else if (_motorInput > 0)
-        {
-            if (forwardSpeed < -1f)
-                brake  = Mathf.Abs(_motorInput) * brakeTorque;
-            else
-                torque = speed < maxSpeed ? _motorInput * maxMotorTorque : 0f;
-        }
 
-        // ── Drive mode ───────────────────────────────────────────────────
-        switch (driveMode)
-        {
-            case DriveMode.FWD:
-                wheelFL.motorTorque = torque;
-                wheelFR.motorTorque = torque;
-                wheelRL.motorTorque = 0f;
-                wheelRR.motorTorque = 0f;
-                break;
-            case DriveMode.RWD:
-                wheelFL.motorTorque = 0f;
-                wheelFR.motorTorque = 0f;
-                wheelRL.motorTorque = torque;
-                wheelRR.motorTorque = torque;
-                break;
-            case DriveMode.AWD:
-                wheelFL.motorTorque = torque * 0.5f;
-                wheelFR.motorTorque = torque * 0.5f;
-                wheelRL.motorTorque = torque * 0.5f;
-                wheelRR.motorTorque = torque * 0.5f;
-                break;
-        }
+        // ── High-speed downforce ─────────────────────────────────────────────
+        _rb.AddForce(-transform.up * downforce * speed);
 
-        // ── Braking ──────────────────────────────────────────────────────
-        float hb = _handBrake ? handBrakeTorque : 0f;
-        wheelFL.brakeTorque = brake;
-        wheelFR.brakeTorque = brake;
-        wheelRL.brakeTorque = brake + hb;
-        wheelRR.brakeTorque = brake + hb;
-
-        // ── GTA-style drift friction ─────────────────────────────────────
-        UpdateDriftFriction(speed, brake);
-
-        // ── Anti-roll bars ───────────────────────────────────────────────
-        ApplyAntiRoll(wheelFL, wheelFR);
-        ApplyAntiRoll(wheelRL, wheelRR);
-
-        // ── Sync visual meshes ───────────────────────────────────────────
-        SyncMesh(wheelFL, meshFL);
-        SyncMesh(wheelFR, meshFR);
-        SyncMesh(wheelRL, meshRL);
-        SyncMesh(wheelRR, meshRR);
-
+        // ── Steering wheel visual ────────────────────────────────────────────
         if (steeringPivot != null)
-            steeringPivot.localRotation = initialSteeringWheelRot * Quaternion.Euler(0, 0, -_steerInput * steeringWheelMaxAngle);
+        {
+            float n = maxSteerAngle > 0.01f ? _currentSteerAngle / maxSteerAngle : 0f;
+            steeringPivot.localRotation = initialSteeringWheelRot * Quaternion.Euler(0, 0, -n * steeringWheelMaxAngle);
+        }
     }
 
-    void UpdateDriftFriction(float speedKmh, float brakeAmount)
+    void UpdateSteering(float forwardSpeed, float dt)
     {
-        WheelHit hit;
-
-        // ── Sample actual lateral slip from each axle ────────────────────
-        float rearSlip = 0f; int rearN = 0;
-        if (wheelRL.GetGroundHit(out hit)) { rearSlip += Mathf.Abs(hit.sidewaysSlip); rearN++; }
-        if (wheelRR.GetGroundHit(out hit)) { rearSlip += Mathf.Abs(hit.sidewaysSlip); rearN++; }
-        if (rearN > 0) rearSlip /= rearN;
-
-        float frontSlip = 0f; int frontN = 0;
-        if (wheelFL.GetGroundHit(out hit)) { frontSlip += Mathf.Abs(hit.sidewaysSlip); frontN++; }
-        if (wheelFR.GetGroundHit(out hit)) { frontSlip += Mathf.Abs(hit.sidewaysSlip); frontN++; }
-        if (frontN > 0) frontSlip /= frontN;
-
-        // ── Build drift factors ──────────────────────────────────────────
-        bool isBraking  = brakeAmount > 0f;
-        bool isSteering = Mathf.Abs(_steerInput) > 0.1f;
-
-        // Slip already happening beyond threshold
-        float rearSlipFactor  = Mathf.Clamp01((rearSlip  - slipThreshold) / Mathf.Max(0.01f, slipThreshold));
-        float frontSlipFactor = Mathf.Clamp01((frontSlip - slipThreshold) / Mathf.Max(0.01f, slipThreshold));
-
-        // Brake + steer at speed -> rear starts to step out (oversteer)
-        float brakeTurnFactor = (isBraking && isSteering)
-            ? brakeSteerDriftFactor * Mathf.Clamp01(speedKmh / 30f)
-            : 0f;
-
-        // Handbrake: instantly kill rear grip
-        float handBrakeFactor = _handBrake ? 1f : 0f;
-
-        float rearDrift  = Mathf.Clamp01(rearSlipFactor  + brakeTurnFactor + handBrakeFactor);
-        float frontDrift = Mathf.Clamp01(frontSlipFactor + brakeTurnFactor * 0.25f);
-
-        // ── Target stiffness values ──────────────────────────────────────
-        float targetRear  = Mathf.Lerp(sidewaysStiffness, driftSidewaysStiffness,         rearDrift);
-        float targetFront = Mathf.Lerp(sidewaysStiffness, driftSidewaysStiffness * 1.4f,  frontDrift);
-
-        // Lose grip fast, regain slowly (authentic slip feel)
-        float loseRate     = driftRecoverySpeed * 2.5f;
-        float recoverRate  = driftRecoverySpeed;
-
-        _currentRearSideways = Mathf.Lerp(
-            _currentRearSideways, targetRear,
-            (targetRear < _currentRearSideways ? loseRate : recoverRate) * Time.fixedDeltaTime);
-
-        _currentFrontSideways = Mathf.Lerp(
-            _currentFrontSideways, targetFront,
-            (targetFront < _currentFrontSideways ? loseRate : recoverRate) * Time.fixedDeltaTime);
-
-        SetFriction(wheelRL, forwardStiffness, _currentRearSideways);
-        SetFriction(wheelRR, forwardStiffness, _currentRearSideways);
-        SetFriction(wheelFL, forwardStiffness, _currentFrontSideways);
-        SetFriction(wheelFR, forwardStiffness, _currentFrontSideways);
+        // Sharp at low speed, gentler at high speed; gradual (not snapping).
+        float speedT = Mathf.Clamp01(Mathf.Abs(forwardSpeed) / Mathf.Max(1f, maxSpeed));
+        float effective = maxSteerAngle * Mathf.Lerp(1f, highSpeedSteer, speedT);
+        float target = _steerInput * effective;
+        float rate = (Mathf.Abs(target) < Mathf.Abs(_currentSteerAngle)) ? steerReturnSpeed : steerSpeed;
+        _currentSteerAngle = Mathf.MoveTowards(_currentSteerAngle, target, rate * dt);
     }
 
-    void ApplyAntiRoll(WheelCollider left, WheelCollider right)
+    void UpdateRearGrip(float speed, float dt)
     {
-        WheelHit hit;
-        float travelL = 1f, travelR = 1f;
+        bool steering = Mathf.Abs(_steerInput) > 0.1f;
+        bool braking  = _motorInput < -0.1f;
 
-        bool groundedL = left.GetGroundHit(out hit);
-        if (groundedL)
-            travelL = (-left.transform.InverseTransformPoint(hit.point).y - left.radius)
-                      / left.suspensionDistance;
+        float target = rearGrip;
+        if (_handBrake)                              target = handbrakeGrip;
+        else if (braking && steering && speed > 4f)  target = driftRearGrip;
 
-        bool groundedR = right.GetGroundHit(out hit);
-        if (groundedR)
-            travelR = (-right.transform.InverseTransformPoint(hit.point).y - right.radius)
-                      / right.suspensionDistance;
-
-        float force = (travelL - travelR) * antiRollForce;
-        if (groundedL) _rb.AddForceAtPosition(left.transform.up  * -force, left.transform.position);
-        if (groundedR) _rb.AddForceAtPosition(right.transform.up *  force, right.transform.position);
+        // Lose grip quickly, recover gradually (authentic drift feel).
+        float rate = (target < _currentRearGrip ? gripRecoverySpeed * 2.5f : gripRecoverySpeed) * dt;
+        _currentRearGrip = Mathf.Lerp(_currentRearGrip, target, rate);
     }
 
-    void SyncMesh(WheelCollider wc, Transform mesh)
+    void PlaceWheelMesh(Wheel w, Vector3 anchorPos)
     {
-        if (mesh == null) return;
-        wc.GetWorldPose(out Vector3 pos, out Quaternion rot);
-        mesh.position = pos;
-        mesh.rotation = rot;
+        float maxDrop = restLength + springTravel;
+        int n = Physics.RaycastNonAlloc(anchorPos, Vector3.down, _hitBuf,
+                                        maxDrop + wheelRadius + 0.5f, ~0, QueryTriggerInteraction.Ignore);
+        float bestDist = float.MaxValue;
+        bool found = false;
+        for (int i = 0; i < n; i++)
+        {
+            if (_hitBuf[i].collider.transform.IsChildOf(transform)) continue;
+            if (_hitBuf[i].distance < bestDist) { bestDist = _hitBuf[i].distance; found = true; }
+        }
+        float len = found ? Mathf.Clamp(bestDist - wheelRadius, 0.02f, maxDrop) : maxDrop;
+        w.meshPos = anchorPos + Vector3.down * len;
+    }
+
+    void UpdateWheelMesh(Wheel w, float forwardSpeed, float dt)
+    {
+        if (w.mesh == null) return;
+
+        w.mesh.position = w.meshPos;
+
+        // Roll the wheel for travel; steer the fronts. Built the same way Unity's
+        // WheelCollider.GetWorldPose does it (car rotation → steer about up → roll
+        // about the axle), so the authored wheel mesh stays correctly oriented.
+        w.spin = Mathf.Repeat(w.spin + (forwardSpeed / Mathf.Max(0.05f, wheelRadius)) * Mathf.Rad2Deg * dt, 360f);
+        float steer = w.steer ? _currentSteerAngle : 0f;
+        w.mesh.rotation = transform.rotation
+                        * Quaternion.AngleAxis(steer, Vector3.up)
+                        * Quaternion.AngleAxis(w.spin, Vector3.right);
     }
 
 #if UNITY_EDITOR
     void OnDrawGizmosSelected()
     {
         Gizmos.color = Color.yellow;
-        Gizmos.DrawSphere(transform.TransformPoint(centerOfMassOffset), 0.08f);
+        Gizmos.DrawSphere(transform.TransformPoint(centerOfMass), 0.08f);
+
+        Gizmos.color = Color.cyan;
+        foreach (var wc in new[] { wheelFL, wheelFR, wheelRL, wheelRR })
+        {
+            if (wc == null) continue;
+            Vector3 p = wc.transform.position;
+            Gizmos.DrawLine(p, p - transform.up * (restLength + springTravel + wheelRadius));
+        }
     }
 #endif
 }

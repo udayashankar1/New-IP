@@ -15,6 +15,16 @@ public class PlayerController : MonoBehaviour
     public float rotationSmoothTime = 0.1f;
     public float maxTurnSpeed       = 360f;
 
+    [Header("Input Smoothing")]
+    [Tooltip("How quickly the movement input ramps to the keys you're pressing. Higher = snappier, lower = floatier. Smooths rapid taps and direction flips.")]
+    public float inputSmoothTime = 0.12f;
+
+    [Header("Lean / Bank")]
+    [Tooltip("Turn rate (deg/sec) that maps to a full lean (VelocityX = ±1).")]
+    public float leanReferenceTurnRate = 200f;
+    [Tooltip("How quickly the lean eases in and out. Higher = floatier lean.")]
+    public float leanSmoothTime = 0.14f;
+
     [Header("Animation")]
     public float animDampTime = 0.08f;
 
@@ -22,10 +32,15 @@ public class PlayerController : MonoBehaviour
     Animator            _anim;
     Camera              _camera;
 
-    float _yawVelocity;
-    float _verticalSpeed;
-    float _currentSpeed;
-    bool  _locked;
+    float   _yawVelocity;
+    float   _verticalSpeed;
+    float   _currentSpeed;
+    bool    _locked;
+
+    Vector2 _smoothInput;
+    Vector2 _smoothInputVel;
+    float   _velX;          // smoothed lean fed to the animator
+    float   _velXVel;
 
     bool _crouching;
 
@@ -67,34 +82,40 @@ public class PlayerController : MonoBehaviour
     {
         if (_locked)
         {
-            _currentSpeed = 0f;
-            _anim.SetFloat(HashVelX, 0f, animDampTime, Time.deltaTime);
-            _anim.SetFloat(HashVelZ, 0f, animDampTime, Time.deltaTime);
+            _currentSpeed   = 0f;
+            _smoothInput    = Vector2.zero;
+            _smoothInputVel = Vector2.zero;
+            _velX           = Mathf.SmoothDamp(_velX, 0f, ref _velXVel, leanSmoothTime);
+            _anim.SetFloat(HashVelX, _velX, animDampTime, Time.deltaTime);
+            _anim.SetFloat(HashVelZ, 0f,    animDampTime, Time.deltaTime);
             return;
         }
 
-        float h         = Input.GetAxis("Horizontal");
-        float v         = Input.GetAxis("Vertical");
-        bool  isRunning = !_crouching
+        bool isRunning = !_crouching
                        && (Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift));
 
-        Vector2 input = new Vector2(h, v);
-        if (input.sqrMagnitude > 1f) input.Normalize();
+        // Raw input drives speed (snappy start/stop); a smoothed copy drives facing.
+        Vector2 rawInput = new Vector2(Input.GetAxisRaw("Horizontal"), Input.GetAxisRaw("Vertical"));
+        if (rawInput.sqrMagnitude > 1f) rawInput.Normalize();
+        bool hasInput = rawInput.sqrMagnitude > 0.01f;
+
+        _smoothInput = Vector2.SmoothDamp(_smoothInput, rawInput, ref _smoothInputVel, inputSmoothTime);
+        if (_smoothInput.sqrMagnitude < 0.000001f) _smoothInput = Vector2.zero;
 
         Vector3 camFwd   = Vector3.ProjectOnPlane(_camera.transform.forward, Vector3.up).normalized;
         Vector3 camRight = Vector3.ProjectOnPlane(_camera.transform.right,   Vector3.up).normalized;
-        Vector3 inputDir = camFwd * input.y + camRight * input.x;
-        bool    hasInput = inputDir.sqrMagnitude > 0.01f;
+        Vector3 faceDir  = camFwd * _smoothInput.y + camRight * _smoothInput.x;
 
         float maxSpd      = _crouching ? crouchSpeed : (isRunning ? runSpeed : walkSpeed);
         float targetSpeed = hasInput ? maxSpd : 0f;
         float ramp        = _currentSpeed < targetSpeed ? acceleration : deceleration;
         _currentSpeed = Mathf.MoveTowards(_currentSpeed, targetSpeed, ramp * Time.deltaTime);
 
+        // Rotate toward the *smoothed* direction so rapid taps / 180° flips stay fluid.
         float prevYaw = transform.eulerAngles.y;
-        if (hasInput)
+        if (faceDir.sqrMagnitude > 0.0025f)
         {
-            float targetYaw = Quaternion.LookRotation(inputDir.normalized).eulerAngles.y;
+            float targetYaw = Quaternion.LookRotation(faceDir.normalized).eulerAngles.y;
             float newYaw    = Mathf.SmoothDampAngle(prevYaw, targetYaw,
                                   ref _yawVelocity, rotationSmoothTime, maxTurnSpeed);
             transform.rotation = Quaternion.Euler(0f, newYaw, 0f);
@@ -106,31 +127,25 @@ public class PlayerController : MonoBehaviour
         // VelocityZ: crouch → 0..0.5 range;  stand → 0(idle) 0.5(walk) 1.0(run)
         float velZ;
         if (_currentSpeed < 0.001f)
-        {
             velZ = 0f;
-        }
         else if (_crouching)
-        {
             velZ = (_currentSpeed / crouchSpeed) * 0.5f;
-        }
         else if (_currentSpeed <= walkSpeed)
-        {
             velZ = (_currentSpeed / walkSpeed) * 0.5f;
-        }
         else
-        {
             velZ = 0.5f + ((_currentSpeed - walkSpeed) / (runSpeed - walkSpeed)) * 0.5f;
-        }
 
-        // VelocityX: angular velocity → lean/bank + crouch left-right blend
-        float yawDelta = Mathf.DeltaAngle(prevYaw, transform.eulerAngles.y);
-        float maxYaw   = maxTurnSpeed * Time.deltaTime;
-        float velX     = _currentSpeed > 0.01f && maxYaw > 0.001f
-                         ? Mathf.Clamp(-yawDelta / maxYaw, -1f, 1f)
-                         : 0f;
+        // VelocityX: lean/bank from actual angular velocity (deg/sec), eased in & out.
+        // No per-frame max-turn normalization, so hard turns no longer slam to ±1.
+        float yawDelta  = Mathf.DeltaAngle(prevYaw, transform.eulerAngles.y);
+        float turnRate  = Time.deltaTime > 0.0001f ? yawDelta / Time.deltaTime : 0f;
+        float targetVelX = _currentSpeed > 0.1f && leanReferenceTurnRate > 0.001f
+                           ? Mathf.Clamp(-turnRate / leanReferenceTurnRate, -1f, 1f)
+                           : 0f;
+        _velX = Mathf.SmoothDamp(_velX, targetVelX, ref _velXVel, leanSmoothTime);
 
-        _anim.SetFloat(HashVelX, velX, animDampTime, Time.deltaTime);
-        _anim.SetFloat(HashVelZ, velZ, animDampTime, Time.deltaTime);
+        _anim.SetFloat(HashVelX, _velX, animDampTime, Time.deltaTime);
+        _anim.SetFloat(HashVelZ, velZ,  animDampTime, Time.deltaTime);
     }
 
     void ApplyGravity()

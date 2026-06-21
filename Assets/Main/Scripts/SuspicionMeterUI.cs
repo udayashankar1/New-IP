@@ -32,12 +32,12 @@ public class SuspicionMeterUI : MonoBehaviour
         if (_canvas != null) _canvas.enabled = false;
     }
 
-    void Start() => _cam = Camera.main;
+    void Start() => _cam = GameManager.Instance.MainCamera;
 
     void LateUpdate()
     {
         if (enemy == null) return;
-        if (_cam == null) _cam = Camera.main;
+        if (_cam == null) _cam = GameManager.Instance.MainCamera;
 
         // Detected flash timer
         bool detected = enemy.IsDetected;

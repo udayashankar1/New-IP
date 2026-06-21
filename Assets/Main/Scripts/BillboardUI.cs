@@ -17,7 +17,7 @@ public class BillboardUI : MonoBehaviour
 
     void LateUpdate()
     {
-        if (_cam == null) _cam = Camera.main;
+        if (_cam == null) _cam = GameManager.Instance.MainCamera;
         if (_cam == null) return;
 
         // Mirror the camera's own rotation — UI stays perfectly screen-parallel

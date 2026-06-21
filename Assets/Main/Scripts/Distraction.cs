@@ -76,12 +76,13 @@ public class Distraction : MonoBehaviour
     public void ShowQPrompt(bool show)
     {
         if (show == (_qInstance != null)) return;        // already in the desired state
+
+        var pool = GameManager.Instance.Prompts;
         if (show)
-            _qInstance = PromptPool.Instance != null
-                ? PromptPool.Instance.Acquire(PromptType.Q, PromptParent, qPromptOffset) : null;
+            _qInstance = pool != null ? pool.Acquire(PromptType.Q, PromptParent, qPromptOffset) : null;
         else
         {
-            if (PromptPool.Instance != null) PromptPool.Instance.Release(_qInstance);
+            if (pool != null) pool.Release(_qInstance);
             _qInstance = null;
         }
     }
@@ -100,10 +101,11 @@ public class Distraction : MonoBehaviour
         Vector3 outward = OutwardDir();
 
         // Ghost appears beyond the object (outward from the table) facing it, and calls immediately…
-        if (GhostCaller.Instance != null)
+        var ghost = GameManager.Instance.Ghost;
+        if (ghost != null)
         {
             Vector3 ghostPos = transform.position + outward * ghostStandoff;
-            GhostCaller.Instance.Summon(ghostPos, transform.position);
+            ghost.Summon(ghostPos, transform.position);
         }
 
         // …then the object falls after a delay so it can be synced with the animation.
@@ -143,7 +145,7 @@ public class Distraction : MonoBehaviour
     void EmitNoise(Vector3 spot)
     {
         var hearers = new List<EnemyPatrol>();
-        foreach (var e in FindObjectsOfType<EnemyPatrol>())
+        foreach (var e in GameManager.Instance.Enemies)
         {
             if (e == null || !e.CanBeDistracted) continue;
             float range = noiseRadiusOverride > 0f ? noiseRadiusOverride : e.HearingRange;

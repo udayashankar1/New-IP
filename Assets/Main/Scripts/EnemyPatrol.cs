@@ -41,12 +41,13 @@ public class EnemyPatrol : MonoBehaviour
     public void ShowQPrompt(bool show)
     {
         if (show == (_qInstance != null)) return;        // already in the desired state
+
+        var pool = GameManager.Instance.Prompts;
         if (show)
-            _qInstance = PromptPool.Instance != null
-                ? PromptPool.Instance.Acquire(PromptType.Q, PromptParent, qPromptOffset) : null;
+            _qInstance = pool != null ? pool.Acquire(PromptType.Q, PromptParent, qPromptOffset) : null;
         else
         {
-            if (PromptPool.Instance != null) PromptPool.Instance.Release(_qInstance);
+            if (pool != null) pool.Release(_qInstance);
             _qInstance = null;
         }
     }
@@ -55,12 +56,13 @@ public class EnemyPatrol : MonoBehaviour
     {
         _fPromptActive = show;
         if (show == (_fInstance != null)) return;
+
+        var pool = GameManager.Instance.Prompts;
         if (show)
-            _fInstance = PromptPool.Instance != null
-                ? PromptPool.Instance.Acquire(PromptType.F, PromptParent, fPromptOffset) : null;
+            _fInstance = pool != null ? pool.Acquire(PromptType.F, PromptParent, fPromptOffset) : null;
         else
         {
-            if (PromptPool.Instance != null) PromptPool.Instance.Release(_fInstance);
+            if (pool != null) pool.Release(_fInstance);
             _fInstance = null;
         }
     }
@@ -187,8 +189,9 @@ public class EnemyPatrol : MonoBehaviour
         behind.y = transform.position.y;
 
         // Ghost appears behind, facing the enemy's back, and does its calling gesture immediately…
-        if (GhostCaller.Instance != null)
-            GhostCaller.Instance.Summon(behind, transform.position + Vector3.up * 1f);
+        var ghost = GameManager.Instance.Ghost;
+        if (ghost != null)
+            ghost.Summon(behind, transform.position + Vector3.up * 1f);
 
         // …then the enemy turns around after a delay (synced with the calling animation).
         StartCoroutine(LureTurnRoutine(behind));
@@ -230,23 +233,29 @@ public class EnemyPatrol : MonoBehaviour
         _anim = GetComponent<Animator>();
         _anim.applyRootMotion = false;
 
-        var playerGO = GameObject.FindGameObjectWithTag("Player");
-        if (playerGO != null)
-        {
-            _player     = playerGO.transform;
-            _playerCtrl = playerGO.GetComponent<PlayerController>();
-        }
-        else Debug.LogWarning("EnemyPatrol: no GameObject with tag 'Player' found.");
+        // Player comes from the central manager (no per-enemy tag search).
+        _playerCtrl = GameManager.Instance.Player;
+        _player     = GameManager.Instance.PlayerTransform;
+        if (_player == null) Debug.LogWarning("EnemyPatrol: no PlayerController found in the scene.");
+
+        GameManager.Instance.RegisterEnemy(this);
 
         _waypointIndex = NearestWaypointIndex();
         _navPath       = new NavMeshPath();
     }
 
-    // Pooled prompts are returned to the pool whenever this enemy is disabled.
+    void OnEnable()
+    {
+        if (GameManager.Exists) GameManager.Instance.RegisterEnemy(this);
+    }
+
+    // Pooled prompts are returned to the pool, and the enemy leaves the registry,
+    // whenever it is disabled (e.g. after a takedown).
     void OnDisable()
     {
         ShowQPrompt(false);
         ShowFPrompt(false);
+        if (GameManager.Exists) GameManager.Instance.UnregisterEnemy(this);
     }
 
     // ── Main loop ──────────────────────────────────────────────
@@ -367,15 +376,7 @@ public class EnemyPatrol : MonoBehaviour
 
             // Stop and face the player while the timer builds
             _anim.SetFloat(HashSpeed, 0f, 0.08f, Time.deltaTime);
-            Vector3 dir = _player.position - transform.position;
-            dir.y = 0f;
-            if (dir.sqrMagnitude > 0.001f)
-            {
-                float targetYaw = Quaternion.LookRotation(dir.normalized).eulerAngles.y;
-                float newYaw    = Mathf.SmoothDampAngle(transform.eulerAngles.y, targetYaw,
-                                      ref _yawVelocity, rotationSmoothTime, maxTurnSpeed);
-                transform.rotation = Quaternion.Euler(0f, newYaw, 0f);
-            }
+            StealthUtils.FaceWorldPoint(transform, _player.position, ref _yawVelocity, rotationSmoothTime, maxTurnSpeed);
 
             if (_suspicionTimer >= suspicionDuration)
             {
@@ -411,16 +412,7 @@ public class EnemyPatrol : MonoBehaviour
     void HandleFacing()
     {
         _anim.SetFloat(HashSpeed, 0f, 0.08f, Time.deltaTime);
-
-        Vector3 dir = _lastSeenPosition - transform.position;
-        dir.y = 0f;
-        if (dir.sqrMagnitude > 0.001f)
-        {
-            float targetYaw = Quaternion.LookRotation(dir.normalized).eulerAngles.y;
-            float newYaw    = Mathf.SmoothDampAngle(transform.eulerAngles.y, targetYaw,
-                                  ref _yawVelocity, rotationSmoothTime, maxTurnSpeed);
-            transform.rotation = Quaternion.Euler(0f, newYaw, 0f);
-        }
+        StealthUtils.FaceWorldPoint(transform, _lastSeenPosition, ref _yawVelocity, rotationSmoothTime, maxTurnSpeed);
 
         _facingTimer += Time.deltaTime;
         if (_facingTimer >= facingDuration)
@@ -441,19 +433,7 @@ public class EnemyPatrol : MonoBehaviour
             return;
         }
 
-        Vector3 steer   = GetNavSteeringTarget(_lastSeenPosition) - transform.position;
-        steer.y         = 0f;
-        Vector3 dir     = steer.sqrMagnitude > 0.001f ? steer.normalized : toTarget.normalized;
-        float targetYaw = Quaternion.LookRotation(dir).eulerAngles.y;
-        float newYaw    = Mathf.SmoothDampAngle(transform.eulerAngles.y, targetYaw,
-                              ref _yawVelocity, rotationSmoothTime, maxTurnSpeed);
-        transform.rotation = Quaternion.Euler(0f, newYaw, 0f);
-
-        float angleOff  = Vector3.Angle(transform.forward, dir);
-        float speedMult = Mathf.Lerp(1f, 0.4f, Mathf.Clamp01(angleOff / 90f));
-        if (!_cc.enabled) return;
-        _cc.Move(transform.forward * moveSpeed * speedMult * Time.deltaTime);
-        _anim.SetFloat(HashSpeed, moveSpeed * speedMult, 0.12f, Time.deltaTime);
+        DriveToward(_lastSeenPosition);
     }
 
     // Step 3 — stand at the spot for investigateDuration then return to patrol
@@ -475,16 +455,7 @@ public class EnemyPatrol : MonoBehaviour
     void HandleGlancing()
     {
         _anim.SetFloat(HashSpeed, 0f, 0.08f, Time.deltaTime);
-
-        Vector3 dir = _distractionSpot - transform.position;
-        dir.y = 0f;
-        if (dir.sqrMagnitude > 0.001f)
-        {
-            float targetYaw = Quaternion.LookRotation(dir.normalized).eulerAngles.y;
-            float newYaw    = Mathf.SmoothDampAngle(transform.eulerAngles.y, targetYaw,
-                                  ref _yawVelocity, rotationSmoothTime, maxTurnSpeed);
-            transform.rotation = Quaternion.Euler(0f, newYaw, 0f);
-        }
+        StealthUtils.FaceWorldPoint(transform, _distractionSpot, ref _yawVelocity, rotationSmoothTime, maxTurnSpeed);
 
         _glanceTimer += Time.deltaTime;
         if (_glanceTimer >= _glanceWait)
@@ -558,12 +529,25 @@ public class EnemyPatrol : MonoBehaviour
             return;
         }
 
-        Vector3 steer    = GetNavSteeringTarget(target.position) - transform.position;
-        steer.y          = 0f;
-        Vector3 dir      = steer.sqrMagnitude > 0.001f ? steer.normalized : toTarget.normalized;
-        float targetYaw  = Quaternion.LookRotation(dir).eulerAngles.y;
-        float newYaw     = Mathf.SmoothDampAngle(transform.eulerAngles.y, targetYaw,
-                               ref _yawVelocity, rotationSmoothTime, maxTurnSpeed);
+        DriveToward(target.position);
+    }
+
+    // Steer toward `destination` along the NavMesh and advance, easing the turn and
+    // slowing down on sharp corners. Shared by patrol and investigate-move so both
+    // walk with exactly the same feel.
+    void DriveToward(Vector3 destination)
+    {
+        Vector3 flat = destination - transform.position;
+        flat.y = 0f;
+
+        Vector3 steer = GetNavSteeringTarget(destination) - transform.position;
+        steer.y       = 0f;
+        Vector3 dir   = steer.sqrMagnitude > 0.001f ? steer.normalized
+                      : (flat.sqrMagnitude > 0.0001f ? flat.normalized : transform.forward);
+
+        float targetYaw = Quaternion.LookRotation(dir).eulerAngles.y;
+        float newYaw    = Mathf.SmoothDampAngle(transform.eulerAngles.y, targetYaw,
+                              ref _yawVelocity, rotationSmoothTime, maxTurnSpeed);
         transform.rotation = Quaternion.Euler(0f, newYaw, 0f);
 
         float angleOff  = Vector3.Angle(transform.forward, dir);
@@ -601,6 +585,22 @@ public class EnemyPatrol : MonoBehaviour
     }
 
     // ── Stealth Takedown ───────────────────────────────────────
+    /// <summary>
+    /// Freeze the enemy the instant a takedown is committed (F pressed), BEFORE the
+    /// player walks in. Stops all detection/AI so the enemy keeps facing away and never
+    /// snaps round to look at the player during the approach. The takedown animation
+    /// itself is triggered later by <see cref="BeginTakedown"/> once the player arrives.
+    /// </summary>
+    public void LockForTakedown()
+    {
+        ShowQPrompt(false);
+        ShowFPrompt(false);
+        _phase          = Phase.TakenDown;   // Update() early-returns → no detection, no rotation
+        _suspicionTimer = 0f;
+        _waiting        = false;
+        _anim.SetFloat(HashSpeed, 0f);
+    }
+
     public void BeginTakedown()
     {
         ShowQPrompt(false);

@@ -79,6 +79,11 @@ public class StealthTakedown : MonoBehaviour
         _busy = true;
         _player.LockControls();
 
+        // Freeze the enemy's AI immediately so it can't spot us (and snap round to face
+        // us) while we walk into position. It stays frozen, facing away, until the
+        // takedown animation plays.
+        enemy.LockForTakedown();
+
         // Disable enemy colliders so CC can reach the takedown point
         foreach (var col in enemy.GetComponentsInChildren<Collider>())
             col.enabled = false;

@@ -28,7 +28,7 @@ public class VehicleInteraction : MonoBehaviour
         _cc   = GetComponent<CharacterController>();
         _pc   = GetComponent<PlayerController>();
         _anim = GetComponent<Animator>();
-        _cam  = Camera.main.GetComponent<CameraFollow>();
+        _cam  = GameManager.Instance.MainCamera.GetComponent<CameraFollow>();
     }
 
     void Update()

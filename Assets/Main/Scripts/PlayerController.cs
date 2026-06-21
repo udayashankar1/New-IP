@@ -54,7 +54,7 @@ public class PlayerController : MonoBehaviour
     {
         _cc     = GetComponent<CharacterController>();
         _anim   = GetComponent<Animator>();
-        _camera = Camera.main;
+        _camera = GameManager.Instance.MainCamera;
         _anim.applyRootMotion = false;
     }
 

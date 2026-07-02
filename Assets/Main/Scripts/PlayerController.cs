@@ -54,17 +54,9 @@ public class PlayerController : MonoBehaviour
     bool _crouching;
     bool _aiming;
     bool _aimToggle;       // Ctrl-toggled aim (hands-free, for tuning)
-    bool _coverAiming;     // CoverController is peeking — aim the gun while controls are locked
 
     public bool IsCrouching => _crouching;
-    // Cover peek aims the gun while the player is locked, so OR it in: the aim rig draws the
-    // pistol and twists the torso toward the camera, while the animator's IsAiming bool stays
-    // false so the base layer keeps the cover pose (the masked aim layer supplies the arms).
-    public bool IsAiming    => _aiming || _coverAiming;
-
-    // Called by CoverController while peeking from cover. Independent of the normal aim input,
-    // which is suppressed by LockControls() during cover.
-    public void SetCoverAiming(bool on) => _coverAiming = on;
+    public bool IsAiming    => _aiming;
 
     static readonly int HashVelX        = Animator.StringToHash("VelocityX");
     static readonly int HashVelZ        = Animator.StringToHash("VelocityZ");

@@ -13,11 +13,6 @@ using UnityEngine;
 /// stays crouch-only (C does nothing); a tall box (<see cref="highCoverThreshold"/>) enters
 /// the standing set, after which C toggles between standing and crouching.
 ///
-/// At an extreme edge (cover stops continuing that way), holding aim (right-click) draws the
-/// pistol and aims it: the full-body cover animation keeps playing on the base layer while the
-/// arms are overridden by the aim rig's IK (see <see cref="AimRigController"/>) to point the gun
-/// at the cover aim target. Release aim to settle back behind cover.
-///
 /// This script does NOT rotate the player at all — the turn into/out of cover is authored
 /// in the animation clips. It only translates the player along the wall and clamps that
 /// movement at the cover's edges. While in cover, <see cref="PlayerController"/> is locked.
@@ -56,15 +51,6 @@ public class CoverController : MonoBehaviour
     [Tooltip("Time the Cover-To-Stand clip plays before control returns (match its length).")]
     public float exitDuration  = 1.4f;
 
-    [Header("Edge peek (hold right-click at an extreme edge)")]
-    [Tooltip("How far the body leans out past the corner (metres) at full peek.")]
-    public float peekDistance = 0.35f;
-    [Tooltip("Extra body yaw toward the open side (degrees). The peek clip already defines the " +
-             "lean, so leave at 0 unless you want the lower body to turn out a little more.")]
-    public float peekYaw = 0f;
-    [Tooltip("Smoothing time for easing the peek in and out.")]
-    public float peekDamp = 0.12f;
-
     [Header("Debug")]
     [Tooltip("Log cover movement & edge state to the console each frame while in cover.")]
     public bool debugCover = false;
@@ -86,12 +72,6 @@ public class CoverController : MonoBehaviour
     bool     _canStand;                   // tall cover allows standing; low cover is crouch-only
     Quaternion _approachRot, _alignRot;   // facing at entry, and the square-to-wall target
 
-    AimRigController _aimRig;             // optional aim rig — aims the arms while peeking
-    float _peek, _peekVel;                // 0..1 peek blend, eased
-    int   _peekSide;                      // edge we peek toward: +1 right, -1 left
-    float _peekOffsetApplied;             // lateral lean currently applied along the wall
-    bool  _peekAimToggle;                 // Ctrl-toggled hands-free peek (for tuning the aim IK)
-
     static readonly int HInCover    = Animator.StringToHash("InCover");
     static readonly int HCoverHigh  = Animator.StringToHash("CoverHigh");
     static readonly int HCoverMove  = Animator.StringToHash("CoverMove");
@@ -102,7 +82,6 @@ public class CoverController : MonoBehaviour
         _cc     = GetComponent<CharacterController>();
         _anim   = GetComponent<Animator>();
         _player = GetComponent<PlayerController>();
-        _aimRig = GetComponent<AimRigController>();
     }
 
     void Update()
@@ -200,31 +179,6 @@ public class CoverController : MonoBehaviour
             _anim.SetBool(HCoverHigh, _high);
         }
 
-        // Edge peek: when planted at an extreme edge (cover no longer continues that way) and
-        // holding aim, lean out around the corner with the upper-body gun-aim pose. Right edge
-        // peeks right, left edge peeks left; for cover narrow on both sides, use the active side.
-        bool edgeR    = !CoverContinues(1);
-        bool edgeL    = !CoverContinues(-1);
-        int  edgeSide = (edgeR && edgeL) ? (_mirror ? -1 : 1) : (edgeR ? 1 : (edgeL ? -1 : 0));
-        if (edgeSide != 0) _peekSide = edgeSide;
-
-        // Hold right-click to peek, OR press Ctrl to TOGGLE the peek on/off (hands-free — so you
-        // can sit at a corner and tune the cover aim IK in the inspector without holding a button).
-        if (Input.GetKeyDown(KeyCode.LeftControl) || Input.GetKeyDown(KeyCode.RightControl))
-            _peekAimToggle = !_peekAimToggle;
-        bool peeking = edgeSide != 0 && (Input.GetMouseButton(1) || _peekAimToggle);
-        UpdatePeek(peeking);
-
-        // While leaning out we commit to the corner: hold the lower body idle and don't slide.
-        if (_peek > 0.01f)
-        {
-            _move = Mathf.SmoothDamp(_move, 0f, ref _moveVel, moveDamp);
-            if (Mathf.Abs(_move) < 0.001f) _move = 0f;
-            _anim.SetFloat(HCoverMove, _mirror ? _move : -_move);
-            StickToWall();
-            return;
-        }
-
         float h   = Input.GetAxisRaw("Horizontal");
         int   dir = h > 0.1f ? 1 : (h < -0.1f ? -1 : 0);
 
@@ -254,45 +208,10 @@ public class CoverController : MonoBehaviour
             Debug.Log($"[Cover] h={h:F2} dir={dir} blocked={blocked} contL={CoverContinues(-1)} contR={CoverContinues(1)} move={_move:F2}");
     }
 
-    // Ease the peek in/out: ramp the masked aim-pose layer's weight, lean the body out past the
-    // corner (lateral offset along the wall), and turn it toward the open side. At peek 0 this
-    // restores the planted, square-to-wall pose, so it's safe to call every frame.
-    void UpdatePeek(bool peeking)
-    {
-        // Tell the aim stack to draw the pistol + twist the torso toward the camera (and let
-        // PistolRecoil fire) even though controls are locked. The animator's IsAiming bool stays
-        // off, so the base layer keeps the cover pose.
-        _player.SetCoverAiming(peeking);
-
-        // Drive the aim from the hand-placed cover target (mirrored for the left side) instead of
-        // the camera while peeking. The arms are overridden by IK; the body keeps its full cover
-        // animation on the base layer.
-        if (_aimRig != null) _aimRig.SetCoverPeek(peeking, _peekSide);
-
-        _peek = Mathf.SmoothDamp(_peek, peeking ? 1f : 0f, ref _peekVel, peekDamp);
-        if (_peek < 0.001f) _peek = 0f;
-
-        // Lateral lean as an incremental delta so it composes with StickToWall's perpendicular fix.
-        float desiredOffset = _peekSide * peekDistance * _peek;
-        float delta = desiredOffset - _peekOffsetApplied;
-        if (Mathf.Abs(delta) > 0.0001f) _cc.Move(_moveAxis * delta);
-        _peekOffsetApplied = desiredOffset;
-
-        // Turn toward the open side; collapses back to the square-to-wall facing at peek 0.
-        Quaternion leanRot = _alignRot * Quaternion.Euler(0f, _peekSide * peekYaw, 0f);
-        transform.rotation = Quaternion.Slerp(_alignRot, leanRot, _peek);
-    }
-
     void BeginExit()
     {
-        // Drop any active peek first: retract the lean, zero the aim layer, square back to the wall
-        // so the Cover-To-Stand clip starts from the planted pose it was authored for.
-        if (Mathf.Abs(_peekOffsetApplied) > 0.0001f) _cc.Move(_moveAxis * -_peekOffsetApplied);
-        _peekOffsetApplied = 0f;
-        _peek = 0f; _peekVel = 0f;
-        _peekAimToggle = false;
-        _player.SetCoverAiming(false);
-        if (_aimRig != null) _aimRig.SetCoverPeek(false, _peekSide);
+        // Square back to the wall so the Cover-To-Stand clip starts from the planted pose it
+        // was authored for.
         transform.rotation = _alignRot;
 
         _anim.SetBool(HInCover, false);
